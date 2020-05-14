@@ -220,185 +220,36 @@ TEST_F(SQLiteDatabaseTests, Verify_SQLite_Serialization_Is_Bit_Exact_For_Same_Da
     VerifySerialization(comparisonDb);
 }
 
-TEST_F(SQLiteDatabaseTests, CreateTable) {
+TEST_F(SQLiteDatabaseTests, BuildStatement) {
     // Arrange
-    TableDefinition tableDefinition;
-    tableDefinition.columnDefinitions.push_back({
-        "entity", "int", true,
-    });
-    tableDefinition.columnDefinitions.push_back({
-        "favorite_color", "text", false,
-    });
-    DatabaseConnection comparisonDb;
-    ReconstructDatabase(
-        comparisonDbFilePath,
-        defaultDbInitStatements,
-        comparisonDb,
-        {
-            "CREATE TABLE ktulu (entity int PRIMARY KEY, favorite_color text)",
-        }
-    );
 
     // Act
-    db.CreateTable("ktulu", tableDefinition);
+    const auto buildResults1 = db.BuildStatement("SELECT entity FROM npcs");
+    const auto buildResults2 = db.BuildStatement("SELECT foo FROM bar");
 
     // Assert
-    VerifySerialization(comparisonDb);
+    EXPECT_TRUE(buildResults1.error.empty());
+    EXPECT_FALSE(buildResults2.error.empty());
 }
 
-TEST_F(SQLiteDatabaseTests, DescribeTables) {
+TEST_F(SQLiteDatabaseTests, ExecuteStatement) {
     // Arrange
 
     // Act
-    const auto schema = db.DescribeTables();
+    const auto error1 = db.ExecuteStatement("SELECT entity FROM npcs");
+    const auto error2 = db.ExecuteStatement("SELECT foo FROM bar");
 
     // Assert
-    EXPECT_EQ(
-        TableDefinitions({
-            {"kv", {
-                {
-                    {"key", "text", true},
-                    {"value", "text", false},
-                },
-            }},
-            {"npcs", {
-                {
-                    {"entity", "int", true},
-                    {"name", "text", false},
-                    {"job", "text", false},
-                },
-            }},
-            {"quests", {
-                {
-                    {"npc", "int", false},
-                    {"quest", "int", false},
-                },
-            }},
-        }),
-        schema
-    );
+    EXPECT_TRUE(error1.empty());
+    EXPECT_FALSE(error2.empty());
 }
 
-TEST_F(SQLiteDatabaseTests, RenameTable_New_Name_Not_In_Use) {
-    // Arrange
-    DatabaseConnection comparisonDb;
-    ReconstructDatabase(
-        comparisonDbFilePath,
-        defaultDbInitStatements,
-        comparisonDb,
-        {
-            "ALTER TABLE npcs RENAME TO people",
-        }
-    );
-
-    // Act
-    db.RenameTable("npcs", "people");
-
-    // Assert
-    VerifySerialization(comparisonDb);
+TEST_F(SQLiteDatabaseTests, CreateSnapshot) {
+    // TODO
+    ASSERT_TRUE(false);
 }
 
-TEST_F(SQLiteDatabaseTests, RenameTable_New_Name_In_Use) {
-    // Arrange
-
-    // Act
-    db.RenameTable("npcs", "kv");
-
-    // Assert
-    VerifyNoChanges();
-}
-
-TEST_F(SQLiteDatabaseTests, RenameTable_New_Name_Blank) {
-    // Arrange
-
-    // Act
-    db.RenameTable("npcs", "");
-
-    // Assert
-    VerifyNoChanges();
-}
-
-TEST_F(SQLiteDatabaseTests, RenameTable_Old_Name_Missing) {
-    // Arrange
-
-    // Act
-    db.RenameTable("foo", "bar");
-
-    // Assert
-    VerifyNoChanges();
-}
-
-TEST_F(SQLiteDatabaseTests, AddColumn_Existing_Table) {
-    // Arrange
-    DatabaseConnection comparisonDb;
-    ReconstructDatabase(
-        comparisonDbFilePath,
-        defaultDbInitStatements,
-        comparisonDb,
-        {
-            "ALTER TABLE npcs ADD COLUMN hp int",
-        }
-    );
-
-    // Act
-    db.AddColumn("npcs", {"hp", "int", false});
-
-    // Assert
-    VerifySerialization(comparisonDb);
-}
-
-TEST_F(SQLiteDatabaseTests, AddColumn_No_Such_Table) {
-    // Arrange
-
-    // Act
-    db.AddColumn("foobar", {"hp", "int", false});
-
-    // Assert
-    VerifyNoChanges();
-}
-
-TEST_F(SQLiteDatabaseTests, DestroyColumn_Table_And_Column_Exists) {
-    // Arrange
-    DatabaseConnection comparisonDb;
-    ReconstructDatabase(
-        comparisonDbFilePath,
-        defaultDbInitStatements,
-        comparisonDb,
-        {
-            "BEGIN TRANSACTION",
-            "CREATE TEMPORARY TABLE npcs_(entity,name)",
-            "INSERT INTO npcs_ SELECT entity,name FROM npcs",
-            "DROP TABLE npcs",
-            "CREATE TABLE npcs (entity int PRIMARY KEY, name text)",
-            "INSERT INTO npcs SELECT entity,name FROM npcs_",
-            "DROP TABLE npcs_",
-            "COMMIT",
-        }
-    );
-
-    // Act
-    db.DestroyColumn("npcs", "job");
-
-    // Assert
-    VerifySerialization(comparisonDb);
-}
-
-TEST_F(SQLiteDatabaseTests, DestroyColumn_No_Such_Table) {
-    // Arrange
-
-    // Act
-    db.DestroyColumn("foobar", "job");
-
-    // Assert
-    VerifyNoChanges();
-}
-
-TEST_F(SQLiteDatabaseTests, DestroyColumn_No_Such_Column) {
-    // Arrange
-
-    // Act
-    db.DestroyColumn("npcs", "magic");
-
-    // Assert
-    VerifyNoChanges();
+TEST_F(SQLiteDatabaseTests, InstallSnapshot) {
+    // TODO
+    ASSERT_TRUE(false);
 }

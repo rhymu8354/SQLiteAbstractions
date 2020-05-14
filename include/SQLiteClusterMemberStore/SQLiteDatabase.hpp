@@ -41,53 +41,10 @@ namespace ClusterMemberStore {
 
         // Database
     public:
-        // These are meant to be used primarily (hopefully exclusively) by
-        // database migrations.
-        virtual void CreateTable(
-            const std::string& tableName,
-            const TableDefinition& tableDefinition
+        virtual BuildStatementResults BuildStatement(
+            const std::string& statement
         ) override;
-        virtual TableDefinitions DescribeTables() override;
-        virtual void RenameTable(
-            const std::string& oldTableName,
-            const std::string& newTableName
-        ) override;
-        virtual void AddColumn(
-            const std::string& tableName,
-            const ColumnDefinition& columnDefinition
-        ) override;
-        virtual void DestroyColumn(
-            const std::string& tableName,
-            const std::string& columnName
-        ) override;
-        virtual void DestroyTable(
-            const std::string& tableName
-        ) override;
-
-        // These are for general use by applications as well as database
-        // migrations.
-        virtual void CreateRow(
-            const std::string& tableName,
-            const ColumnDescriptors& columns
-        ) override;
-        virtual DataSet RetrieveRows(
-            const std::string& tableName,
-            const RowSelector& rowSelector,
-            const ColumnSelector& columnSelector
-        ) override;
-        virtual size_t UpdateRows(
-            const std::string& tableName,
-            const RowSelector& rowSelector,
-            const ColumnDescriptors& columns
-        ) override;
-        virtual size_t DestroyRows(
-            const std::string& tableName,
-            const RowSelector& rowSelector
-        ) override;
-
-        // These are especially designed for use by the Raft Consensus
-        // Algorithm when installing snapshots of state from one server to
-        // another.
+        virtual std::string ExecuteStatement(const std::string& statement) override;
         virtual Blob CreateSnapshot() override;
         virtual void InstallSnapshot(const Blob& blob) override;
 

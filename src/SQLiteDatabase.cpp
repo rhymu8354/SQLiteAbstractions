@@ -189,56 +189,9 @@ namespace ClusterMemberStore {
         // Properties
 
         DatabaseConnection db;
-        PreparedStatement getTableNames;
-        TableDefinitions tables;
 
         // Methods
 
-        void ReadMetadata() {
-            ResetStatement(getTableNames);
-            tables.clear();
-            StepStatementResults getTableNameResult;
-            while (
-                getTableNameResult = StepStatement(getTableNames),
-                (
-                    !getTableNameResult.done
-                    && !getTableNameResult.error
-                )
-            ) {
-                // In general this is a bad habit, to use string interpolation
-                // to fill in parameters.  We really should try to use
-                // bindings whenever possible.
-                //
-                // However, for SQLite PRAGMA statements, bindings don't work.
-                // For reference:
-                //     * https://stackoverflow.com/questions/39985599/parameter-binding-not-working-for-sqlite-pragma-table-info
-                //     * http://sqlite.1065341.n5.nabble.com/PRAGMA-doesn-t-support-parameter-binds-td45863.html#a45866
-                const auto tableName = GetColumnText(getTableNames, 0);
-                TableDefinition table;
-                auto getTableSchema = BuildStatement(
-                    db,
-                    StringExtensions::sprintf(
-                        "PRAGMA table_info(%s)",
-                        tableName.c_str()
-                    )
-                );
-                StepStatementResults getTableSchemaResult;
-                while (
-                    getTableSchemaResult = StepStatement(getTableSchema),
-                    (
-                        !getTableSchemaResult.done
-                        && !getTableSchemaResult.error
-                    )
-                ) {
-                    table.columnDefinitions.push_back({
-                        GetColumnText(getTableSchema, 1),
-                        GetColumnText(getTableSchema, 2),
-                        GetColumnBoolean(getTableSchema, 5),
-                    });
-                }
-                tables[tableName] = std::move(table);
-            }
-        }
     };
 
     SQLiteDatabase::~SQLiteDatabase() noexcept = default;
@@ -262,201 +215,53 @@ namespace ClusterMemberStore {
                 (void)sqlite3_close(dbRaw);
             }
         );
-        impl_->getTableNames = BuildStatement(
-            impl_->db,
-            "SELECT name FROM SQLITE_MASTER WHERE TYPE='table'"
-        );
-        impl_->ReadMetadata();
         return true;
     }
 
-    void SQLiteDatabase::CreateTable(
-        const std::string& tableName,
-        const TableDefinition& tableDefinition
+    BuildStatementResults SQLiteDatabase::BuildStatement(
+        const std::string& statement
     ) {
-        std::ostringstream statement;
-        statement << "CREATE TABLE " << tableName << " (";
-        bool firstColumn = true;
-        for (const auto& columnDefinition: tableDefinition.columnDefinitions) {
-            if (!firstColumn) {
-                statement << ", ";
-            }
-            firstColumn = false;
-            statement << columnDefinition.name << ' ' << columnDefinition.type;
-            if (columnDefinition.isKey) {
-                statement << " PRIMARY KEY";
-            }
+        BuildStatementResults results;
+        sqlite3_stmt* statementRaw;
+        if (
+            sqlite3_prepare_v2(
+                impl_->db.get(),
+                statement.c_str(),
+                (int)(statement.length() + 1), // sqlite wants count to include the null
+                &statementRaw,
+                NULL
+            )
+            != SQLITE_OK
+        ) {
+            results.error = GetLastDatabaseError(impl_->db);
         }
-        statement << ')';
-        (void)ExecuteStatement(
-            impl_->db,
-            statement.str()
-        );
+        (void)sqlite3_finalize(statementRaw);
+        // return PreparedStatement(
+        //     statementRaw,
+        //     [](sqlite3_stmt* statementRaw){
+        //         (void)sqlite3_finalize(statementRaw);
+        //     }
+        // );
+        return results;
     }
 
-    TableDefinitions SQLiteDatabase::DescribeTables() {
-        return impl_->tables;
-    }
-
-    void SQLiteDatabase::RenameTable(
-        const std::string& oldTableName,
-        const std::string& newTableName
-    ) {
-        (void)ExecuteStatement(
-            impl_->db,
-            StringExtensions::sprintf(
-                "ALTER TABLE %s RENAME TO %s",
-                oldTableName.c_str(),
-                newTableName.c_str()
-            )
-        );
-    }
-
-    void SQLiteDatabase::AddColumn(
-        const std::string& tableName,
-        const ColumnDefinition& columnDefinition
-    ) {
-        (void)ExecuteStatement(
-            impl_->db,
-            StringExtensions::sprintf(
-                "ALTER TABLE %s ADD COLUMN %s %s%s",
-                tableName.c_str(),
-                columnDefinition.name.c_str(),
-                columnDefinition.type.c_str(),
-                (
-                    columnDefinition.isKey
-                    ? " PRIMARY KEY"
-                    : ""
-                )
-            )
-        );
-    }
-
-    void SQLiteDatabase::DestroyColumn(
-        const std::string& tableName,
-        const std::string& columnName
-    ) {
-        // Look up the metadata we have on this table.
-        const auto tablesEntry = impl_->tables.find(tableName);
-        if (tablesEntry == impl_->tables.end()) {
-            return; // no such table
+    std::string SQLiteDatabase::ExecuteStatement(const std::string& statement) {
+        char* errmsg;
+        if (
+            sqlite3_exec(
+                impl_->db.get(),
+                statement.c_str(),
+                NULL,
+                NULL,
+                &errmsg
+            ) == SQLITE_ERROR
+        ) {
+            std::string error(errmsg);
+            sqlite3_free(errmsg);
+            return error;
+        } else {
+            return "";
         }
-        const auto& tableDefinition = tablesEntry->second;
-
-        // Construct lists of columns for use in moving data
-        // as well as recreating the columns.
-        std::ostringstream keepColumns;
-        std::ostringstream recreateColumns;
-        bool firstColumn = true;
-        bool foundColumnToBeDestroyed = false;
-        for (const auto& columnDefinition: tableDefinition.columnDefinitions) {
-            if (columnDefinition.name == columnName) {
-                foundColumnToBeDestroyed = true;
-                continue;
-            }
-            if (!firstColumn) {
-                keepColumns << ',';
-                recreateColumns << ", ";
-            }
-            firstColumn = false;
-            keepColumns << columnDefinition.name;
-            recreateColumns << columnDefinition.name << ' ' << columnDefinition.type;
-            if (columnDefinition.isKey) {
-                recreateColumns << " PRIMARY KEY";
-            }
-        }
-
-        // Short-cut the process if no column was found with the given name.
-        if (!foundColumnToBeDestroyed) {
-            return;
-        }
-
-        // Perform the exotic-sequence™ which will drop the column by
-        // completely copying the data we want to keep, reconstructing
-        // the table without the column we want to drop, and finally
-        // copying the data back.
-        std::vector< std::string > statements;
-        statements.push_back("BEGIN TRANSACTION");
-        statements.push_back(
-            StringExtensions::sprintf(
-                "CREATE TEMPORARY TABLE %s_(%s)",
-                tableName.c_str(),
-                keepColumns.str().c_str()
-            )
-        );
-        statements.push_back(
-            StringExtensions::sprintf(
-                "INSERT INTO %s_ SELECT %s FROM %s",
-                tableName.c_str(),
-                keepColumns.str().c_str(),
-                tableName.c_str()
-            )
-        );
-        statements.push_back(
-            StringExtensions::sprintf(
-                "DROP TABLE %s",
-                tableName.c_str()
-            )
-        );
-        statements.push_back(
-            StringExtensions::sprintf(
-                "CREATE TABLE %s (%s)",
-                tableName.c_str(),
-                recreateColumns.str().c_str()
-            )
-        );
-        statements.push_back(
-            StringExtensions::sprintf(
-                "INSERT INTO %s SELECT %s FROM %s_",
-                tableName.c_str(),
-                keepColumns.str().c_str(),
-                tableName.c_str()
-            )
-        );
-        statements.push_back(
-            StringExtensions::sprintf(
-                "DROP TABLE %s_",
-                tableName.c_str()
-            )
-        );
-        statements.push_back("COMMIT");
-        for (const auto& statement: statements) {
-            (void)ExecuteStatement(impl_->db, statement);
-        }
-    }
-
-    void SQLiteDatabase::DestroyTable(
-        const std::string& tableName
-    ) {
-    }
-
-    void SQLiteDatabase::CreateRow(
-        const std::string& tableName,
-        const ColumnDescriptors& columns
-    ) {
-    }
-
-    DataSet SQLiteDatabase::RetrieveRows(
-        const std::string& tableName,
-        const RowSelector& rowSelector,
-        const ColumnSelector& columnSelector
-    ) {
-        return {};
-    }
-
-    size_t SQLiteDatabase::UpdateRows(
-        const std::string& tableName,
-        const RowSelector& rowSelector,
-        const ColumnDescriptors& columns
-    ) {
-        return 0;
-    }
-
-    size_t SQLiteDatabase::DestroyRows(
-        const std::string& tableName,
-        const RowSelector& rowSelector
-    ) {
-        return 0;
     }
 
     Blob SQLiteDatabase::CreateSnapshot() {
