@@ -151,7 +151,7 @@ namespace {
                 }
 
                 case Value::Type::Integer: {
-                    return Value(sqlite3_column_int64(statement, index));
+                    return Value((intmax_t)sqlite3_column_int64(statement, index));
                 }
 
                 case Value::Type::Real: {
