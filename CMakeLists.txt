@@ -1,10 +1,10 @@
-# CMakeLists.txt for SQLiteClusterMemberStore
+# CMakeLists.txt for SQLiteAbstractions
 
 cmake_minimum_required(VERSION 3.8)
-set(This SQLiteClusterMemberStore)
+set(This SQLiteAbstractions)
 
 set(Headers
-    include/SQLiteClusterMemberStore/SQLiteDatabase.hpp
+    include/SQLiteAbstractions/SQLiteDatabase.hpp
 )
 
 set(Sources
@@ -19,7 +19,7 @@ set_target_properties(${This} PROPERTIES
 target_include_directories(${This} PUBLIC include)
 
 target_link_libraries(${This} PUBLIC
-    ClusterMemberStore
+    DatabaseAbstractions
     SQLite
     StringExtensions
     SystemAbstractions

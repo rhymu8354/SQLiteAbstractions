@@ -2,12 +2,12 @@
  * @file SQLiteDatabase.cpp
  *
  * This file contains the implementation of the
- * SQLiteClusterMemberStore::SQLiteDatabase class.
+ * SQLiteAbstractions::SQLiteDatabase class.
  */
 
 #include <functional>
 #include <sqlite3.h>
-#include <SQLiteClusterMemberStore/SQLiteDatabase.hpp>
+#include <SQLiteAbstractions/SQLiteDatabase.hpp>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -16,172 +16,182 @@
 
 namespace {
 
-    using namespace ClusterMemberStore;
+    using namespace DatabaseAbstractions;
 
-    using DatabaseConnection = std::unique_ptr< sqlite3, std::function< void(sqlite3*) > >;
-    using PreparedStatement = std::unique_ptr< sqlite3_stmt, std::function< void(sqlite3_stmt*) > >;
+    using DatabaseConnection = std::shared_ptr< sqlite3 >;
 
     std::string GetLastDatabaseError(const DatabaseConnection& db) {
         return sqlite3_errmsg(db.get());
     }
 
-    void BindStatementParameter(
-        const PreparedStatement& stmt,
-        int index,
-        const std::string& value
-    ) {
-        (void)sqlite3_bind_text(
-            stmt.get(),
-            index,
-            value.data(),
-            (int)value.length(),
-            SQLITE_TRANSIENT
-        );
-    }
+    struct SQliteStatement
+        : public PreparedStatement
+    {
+        // Properties
 
-    PreparedStatement BuildStatement(
-        const DatabaseConnection& db,
-        const std::string& statement
-    ) {
-        sqlite3_stmt* statementRaw;
-        if (
-            sqlite3_prepare_v2(
-                db.get(),
-                statement.c_str(),
-                (int)(statement.length() + 1), // sqlite wants count to include the null
-                &statementRaw,
-                NULL
-            )
-            != SQLITE_OK
-        ) {
-            const auto errmsg = GetLastDatabaseError(db);
-            return nullptr;
+        sqlite3_stmt* statement = nullptr;
+        DatabaseConnection db;
+
+        // Lifecycle
+
+        ~SQliteStatement() noexcept {
+            Drop();
         }
-        return PreparedStatement(
-            statementRaw,
-            [](sqlite3_stmt* statementRaw){
-                (void)sqlite3_finalize(statementRaw);
+
+        // Do not allow copying.
+        SQliteStatement(const SQliteStatement&) = delete;
+        SQliteStatement& operator=(const SQliteStatement&) = delete;
+
+        SQliteStatement(SQliteStatement&& other) noexcept {
+            *this = std::move(other);
+        }
+
+        SQliteStatement& operator=(SQliteStatement&& other) noexcept {
+            Drop();
+            statement = other.statement;
+            other.statement = nullptr;
+        }
+
+        // Constructor
+
+        explicit SQliteStatement(
+            sqlite3_stmt* statement,
+            DatabaseConnection& db
+        )
+            : statement(statement)
+            , db(db)
+        {
+        }
+
+        // Methods
+
+        void Drop() {
+            if (statement) {
+                (void)sqlite3_finalize(statement);
             }
-        );
-    }
-
-    /**
-     * Execute the given SQL statement on the given database.
-     *
-     * @param[in] db
-     *     This is the handle to the database.
-     *
-     * @param[in] statement
-     *     This is the SQL statement to execute.
-     *
-     * @return
-     *     If the statement resulted in an error, a string describing
-     *     the error is returned.  Otherwise, an empty string is returned.
-     */
-    std::string ExecuteStatement(
-        const DatabaseConnection& db,
-        const std::string& statement
-    ) {
-        char* errmsg = NULL;
-        const auto result = sqlite3_exec(
-            db.get(),
-            statement.c_str(),
-            NULL, NULL, &errmsg
-        );
-        if (result != SQLITE_OK) {
-            std::string errmsgManaged(errmsg);
-            sqlite3_free(errmsg);
-            return errmsgManaged;
         }
-        return "";
-    }
 
-    /**
-     * Execute the given prepared SQL statement.
-     *
-     * @param[in] db
-     *     This is the database for which execute the statement.
-     *
-     * @param[in] statement
-     *     This is the prepared SQL statement to execute.
-     *
-     * @return
-     *     If the statement resulted in an error, a string describing
-     *     the error is returned.  Otherwise, an empty string is returned.
-     */
-    std::string ExecuteStatement(
-        const DatabaseConnection& db,
-        const PreparedStatement& statement
-    ) {
-        for(;;) {
-            switch (sqlite3_step(statement.get())) {
+        // PreparedStatement
+
+        virtual void BindParameter(
+            int index,
+            const Value& value
+        ) override {
+            switch(value.GetType()) {
+                case Value::Type::Text: {
+                    const std::string& valueAsString = value;
+                    (void)sqlite3_bind_text(
+                        statement,
+                        index + 1,
+                        valueAsString.c_str(),
+                        (int)valueAsString.length(),
+                        SQLITE_TRANSIENT
+                    );
+                } break;
+
+                case Value::Type::Integer: {
+                    (void)sqlite3_bind_int64(
+                        statement,
+                        index + 1,
+                        (sqlite3_int64)(intmax_t)value
+                    );
+                } break;
+
+                case Value::Type::Real: {
+                    (void)sqlite3_bind_double(
+                        statement,
+                        index + 1,
+                        (double)value
+                    );
+                } break;
+
+                case Value::Type::Boolean: {
+                    (void)sqlite3_bind_int(
+                        statement,
+                        index + 1,
+                        (bool)value ? 1 : 0
+                    );
+                } break;
+
+                case Value::Type::Null: {
+                    (void)sqlite3_bind_null(
+                        statement,
+                        index + 1
+                    );
+                } break;
+
+                default: break;
+            }
+        }
+
+        virtual void BindParameters(std::initializer_list< const Value > values) override {
+            int index = 0;
+            for (
+                auto value = values.begin();
+                value != values.end();
+                ++value, ++index
+            ) {
+                BindParameter(index, *value);
+            }
+        }
+
+        virtual Value FetchColumn(int index, Value::Type type) override {
+            if (sqlite3_column_type(statement, index) == SQLITE_NULL) {
+                return Value(nullptr);
+            }
+            switch (type) {
+                case Value::Type::Text: {
+                    return Value(
+                        std::string(
+                            (const char*)sqlite3_column_text(statement, index),
+                            (size_t)sqlite3_column_bytes(statement, index)
+                        )
+                    );
+                }
+
+                case Value::Type::Integer: {
+                    return Value(sqlite3_column_int64(statement, index));
+                }
+
+                case Value::Type::Real: {
+                    return Value(sqlite3_column_double(statement, index));
+                }
+
+                case Value::Type::Boolean: {
+                    return Value(sqlite3_column_int(statement, index) != 0);
+                }
+
+                default: return Value();
+            }
+        }
+
+        virtual void Reset() override {
+            (void)sqlite3_reset(statement);
+        }
+
+        virtual StepStatementResults Step() override {
+            StepStatementResults results;
+            switch (sqlite3_step(statement)) {
                 case SQLITE_DONE: {
-                    return "";
+                    results.done = true;
                 } break;
 
                 case SQLITE_ROW: {
+                    results.done = false;
                 } break;
 
                 default: {
-                    const auto errmsg = GetLastDatabaseError(db);
-                    return errmsg;
+                    results.done = true;
+                    results.error = GetLastDatabaseError(db);
                 } break;
             }
+            return results;
         }
-    }
-
-    bool GetColumnBoolean(
-        const PreparedStatement& stmt,
-        int columnIndex
-    ) {
-        return (
-            sqlite3_column_int(
-                stmt.get(),
-                columnIndex
-            )
-            != 0
-        );
-    }
-
-    std::string GetColumnText(
-        const PreparedStatement& stmt,
-        int columnIndex
-    ) {
-        return (const char*)sqlite3_column_text(
-            stmt.get(),
-            columnIndex
-        );
-    }
-
-    void ResetStatement(const PreparedStatement& stmt) {
-        (void)sqlite3_reset(stmt.get());
-    }
-
-    struct StepStatementResults {
-        bool done = false;
-        bool error = false;
     };
-
-    StepStatementResults StepStatement(const PreparedStatement& stmt) {
-        StepStatementResults results;
-        switch (sqlite3_step(stmt.get())) {
-            case SQLITE_DONE: {
-                results.done = true;
-            } break;
-
-            case SQLITE_ROW: {
-            } break;
-
-            default: {
-                results.error = true;
-            } break;
-        }
-        return results;
-    }
 
 }
 
-namespace ClusterMemberStore {
+namespace DatabaseAbstractions {
 
     // Here we implement what we specified we would have in our interface.
     // This contains our private properties.
@@ -231,17 +241,16 @@ namespace ClusterMemberStore {
                 &statementRaw,
                 NULL
             )
-            != SQLITE_OK
+            == SQLITE_OK
         ) {
+            auto managedStatement = std::make_shared< SQliteStatement >(
+                statementRaw,
+                impl_->db
+            );
+            results.statement = std::move(managedStatement);
+        } else {
             results.error = GetLastDatabaseError(impl_->db);
         }
-        (void)sqlite3_finalize(statementRaw);
-        // return PreparedStatement(
-        //     statementRaw,
-        //     [](sqlite3_stmt* statementRaw){
-        //         (void)sqlite3_finalize(statementRaw);
-        //     }
-        // );
         return results;
     }
 

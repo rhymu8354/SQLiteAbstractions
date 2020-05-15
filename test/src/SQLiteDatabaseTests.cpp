@@ -2,11 +2,11 @@
  * @file SQLiteDatabaseTests.cpp
  *
  * This module contains the unit tests of the
- * SQLiteClusterMemberStore class.
+ * SQLiteAbstractions class.
  */
 
 #include <gtest/gtest.h>
-#include <SQLiteClusterMemberStore/SQLiteDatabase.hpp>
+#include <SQLiteAbstractions/SQLiteDatabase.hpp>
 #include <memory>
 #include <set>
 #include <sqlite3.h>
@@ -14,7 +14,7 @@
 #include <unordered_set>
 #include <vector>
 
-using namespace ClusterMemberStore;
+using namespace DatabaseAbstractions;
 
 /**
  * This is the base for test fixtures used to test the SMTP library.
@@ -31,15 +31,16 @@ struct SQLiteDatabaseTests
 
     SQLiteDatabase db;
     const SQLStatements defaultDbInitStatements{
-        "CREATE TABLE kv (key text PRIMARY KEY, value text)",
-        "CREATE TABLE npcs (entity int PRIMARY KEY, name text, job text)",
-        "CREATE TABLE quests (npc int, quest int)",
+        "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT)",
+        "CREATE TABLE npcs (entity INT PRIMARY KEY, name TEXT, job TEXT, time REAL)",
+        "CREATE TABLE quests (npc INT, quest INT, completed BOOLEAN)",
         "INSERT INTO kv VALUES ('foo', 'bar')",
-        "INSERT INTO npcs VALUES (1, 'Alex', 'Armorer')",
-        "INSERT INTO npcs VALUES (2, 'Bob', 'Banker')",
-        "INSERT INTO quests VALUES (1, 42)",
-        "INSERT INTO quests VALUES (1, 43)",
-        "INSERT INTO quests VALUES (2, 43)",
+        "INSERT INTO kv VALUES ('spam', NULL)",
+        "INSERT INTO npcs VALUES (1, 'Alex', 'Armorer', 4.321)",
+        "INSERT INTO npcs VALUES (2, 'Bob', 'Banker', NULL)",
+        "INSERT INTO quests VALUES (1, 42, 0)",
+        "INSERT INTO quests VALUES (1, 43, NULL)",
+        "INSERT INTO quests VALUES (2, 43, 1)",
     };
     std::string defaultDbFilePath;
     std::string comparisonDbFilePath;
@@ -242,6 +243,327 @@ TEST_F(SQLiteDatabaseTests, ExecuteStatement) {
     // Assert
     EXPECT_TRUE(error1.empty());
     EXPECT_FALSE(error2.empty());
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_Step_No_Data) {
+    // Arrange
+    DatabaseConnection comparisonDb;
+    const std::string statementText = "INSERT INTO kv (key, value) VALUES ('hello', 'world')";
+    ReconstructDatabase(
+        comparisonDbFilePath,
+        defaultDbInitStatements,
+        comparisonDb,
+        {
+            statementText,
+        }
+    );
+    auto statement = db.BuildStatement(statementText).statement;
+
+    // Act
+    const auto stepResult = statement->Step();
+
+    // Assert
+    EXPECT_TRUE(stepResult.done);
+    EXPECT_TRUE(stepResult.error.empty());
+    VerifySerialization(comparisonDb);
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_Step_One_Row) {
+    // Arrange
+    auto statement = db.BuildStatement(
+        "SELECT quest FROM quests WHERE npc = 2"
+    ).statement;
+
+    // Act
+    const auto step1 = statement->Step();
+    const auto quest1 = statement->FetchColumn(0, Value::Type::Integer);
+    const auto step2 = statement->Step();
+
+    // Assert
+    EXPECT_FALSE(step1.done);
+    EXPECT_TRUE(step1.error.empty());
+    EXPECT_EQ(43, (int)quest1);
+    EXPECT_TRUE(step2.done);
+    EXPECT_TRUE(step2.error.empty());
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_Step_Multiple_Rows) {
+    // Arrange
+    auto statement = db.BuildStatement(
+        "SELECT quest FROM quests WHERE npc = 1"
+    ).statement;
+
+    // Act
+    const auto step1 = statement->Step();
+    const auto quest1 = statement->FetchColumn(0, Value::Type::Integer);
+    const auto step2 = statement->Step();
+    const auto quest2 = statement->FetchColumn(0, Value::Type::Integer);
+    const auto step3 = statement->Step();
+
+    // Assert
+    EXPECT_FALSE(step1.done);
+    EXPECT_TRUE(step1.error.empty());
+    EXPECT_EQ(42, (int)quest1);
+    EXPECT_FALSE(step2.done);
+    EXPECT_TRUE(step2.error.empty());
+    EXPECT_EQ(43, (int)quest2);
+    EXPECT_TRUE(step3.done);
+    EXPECT_TRUE(step3.error.empty());
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_Step_Error) {
+    // Arrange
+    auto statement = db.BuildStatement(
+        "INSERT INTO npcs (entity) VALUES (1)"
+    ).statement;
+
+    // Act
+    const auto stepResults = statement->Step();
+
+    // Assert
+    EXPECT_TRUE(stepResults.done);
+    EXPECT_FALSE(stepResults.error.empty());
+    VerifyNoChanges();
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_BindParameter_Text) {
+    // Arrange
+    DatabaseConnection comparisonDb;
+    ReconstructDatabase(
+        comparisonDbFilePath,
+        defaultDbInitStatements,
+        comparisonDb,
+        {
+            "INSERT INTO kv (key, value) VALUES ('hello', 'world')",
+        }
+    );
+    auto statement = db.BuildStatement(
+        "INSERT INTO kv (key, value) VALUES ('hello', ?)"
+    ).statement;
+
+    // Act
+    statement->BindParameter(0, "world");
+
+    // Assert
+    (void)statement->Step();
+    VerifySerialization(comparisonDb);
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_BindParameter_Integer) {
+    // Arrange
+    DatabaseConnection comparisonDb;
+    ReconstructDatabase(
+        comparisonDbFilePath,
+        defaultDbInitStatements,
+        comparisonDb,
+        {
+            "INSERT INTO quests (npc, quest) VALUES (1, 99)",
+        }
+    );
+    auto statement = db.BuildStatement(
+        "INSERT INTO quests (npc, quest) VALUES (1, ?)"
+    ).statement;
+
+    // Act
+    statement->BindParameter(0, 99);
+
+    // Assert
+    (void)statement->Step();
+    VerifySerialization(comparisonDb);
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_BindParameter_Real) {
+    // Arrange
+    DatabaseConnection comparisonDb;
+    ReconstructDatabase(
+        comparisonDbFilePath,
+        defaultDbInitStatements,
+        comparisonDb,
+        {
+            "UPDATE npcs SET time = 1.23 WHERE entity = 1",
+        }
+    );
+    auto statement = db.BuildStatement(
+        "UPDATE npcs SET time = ? WHERE entity = 1"
+    ).statement;
+
+    // Act
+    statement->BindParameter(0, 1.23);
+
+    // Assert
+    (void)statement->Step();
+    VerifySerialization(comparisonDb);
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_BindParameter_Boolean) {
+    // Arrange
+    DatabaseConnection comparisonDb;
+    ReconstructDatabase(
+        comparisonDbFilePath,
+        defaultDbInitStatements,
+        comparisonDb,
+        {
+            "UPDATE quests SET completed = 1 WHERE npc = 1",
+        }
+    );
+    auto statement = db.BuildStatement(
+        "UPDATE quests SET completed = ? WHERE npc = 1"
+    ).statement;
+
+    // Act
+    statement->BindParameter(0, true);
+
+    // Assert
+    (void)statement->Step();
+    VerifySerialization(comparisonDb);
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_BindParameter_Null) {
+    // Arrange
+    DatabaseConnection comparisonDb;
+    ReconstructDatabase(
+        comparisonDbFilePath,
+        defaultDbInitStatements,
+        comparisonDb,
+        {
+            "UPDATE npcs SET job = NULL WHERE entity = 1",
+        }
+    );
+    auto statement = db.BuildStatement(
+        "UPDATE npcs SET job = ? WHERE entity = 1"
+    ).statement;
+    statement->BindParameter(0, 42);
+
+    // Act
+    statement->BindParameter(0, nullptr);
+
+    // Assert
+    (void)statement->Step();
+    VerifySerialization(comparisonDb);
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_BindParameters) {
+    // Arrange
+    DatabaseConnection comparisonDb;
+    ReconstructDatabase(
+        comparisonDbFilePath,
+        defaultDbInitStatements,
+        comparisonDb,
+        {
+            "UPDATE npcs SET job = 'guard', time = 1.23 WHERE entity = 1",
+        }
+    );
+    auto statement = db.BuildStatement(
+        "UPDATE npcs SET job = ?, time = ? WHERE entity = ?"
+    ).statement;
+
+    // Act
+    statement->BindParameters({"guard", 1.23, 1});
+
+    // Assert
+    (void)statement->Step();
+    VerifySerialization(comparisonDb);
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_Reset) {
+    // Arrange
+    DatabaseConnection comparisonDb;
+    ReconstructDatabase(
+        comparisonDbFilePath,
+        defaultDbInitStatements,
+        comparisonDb,
+        {
+            "INSERT INTO quests (npc, quest) VALUES (1, 99)",
+            "INSERT INTO quests (npc, quest) VALUES (2, 76)",
+        }
+    );
+    auto statement = db.BuildStatement(
+        "INSERT INTO quests (npc, quest) VALUES (?, ?)"
+    ).statement;
+    statement->BindParameters({1, 99});
+    (void)statement->Step();
+
+    // Act
+    statement->Reset();
+
+    // Assert
+    statement->BindParameters({2, 76});
+    (void)statement->Step();
+    VerifySerialization(comparisonDb);
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_FetchColumn_Null) {
+    // Arrange
+    auto statement = db.BuildStatement(
+        "SELECT value FROM kv WHERE key = 'spam'"
+    ).statement;
+    (void)statement->Step();
+
+    // Act
+    const auto value = statement->FetchColumn(0, Value::Type::Text);
+
+    // Assert
+    EXPECT_EQ(Value::Type::Null, value.GetType());
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_FetchColumn_Text) {
+    // Arrange
+    auto statement = db.BuildStatement(
+        "SELECT value FROM kv WHERE key = 'foo'"
+    ).statement;
+    (void)statement->Step();
+
+    // Act
+    const auto value = statement->FetchColumn(0, Value::Type::Text);
+
+    // Assert
+    EXPECT_EQ(Value::Type::Text, value.GetType());
+    EXPECT_EQ("bar", (const std::string&)value);
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_FetchColumn_Integer) {
+    // Arrange
+    auto statement = db.BuildStatement(
+        "SELECT quest FROM quests WHERE npc = 2"
+    ).statement;
+    (void)statement->Step();
+
+    // Act
+    const auto value = statement->FetchColumn(0, Value::Type::Integer);
+
+    // Assert
+    EXPECT_EQ(Value::Type::Integer, value.GetType());
+    EXPECT_EQ(43, (int)value);
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_FetchColumn_Real) {
+    // Arrange
+    auto statement = db.BuildStatement(
+        "SELECT time FROM npcs WHERE entity = 1"
+    ).statement;
+    (void)statement->Step();
+
+    // Act
+    const auto value = statement->FetchColumn(0, Value::Type::Real);
+
+    // Assert
+    EXPECT_EQ(Value::Type::Real, value.GetType());
+    EXPECT_EQ(4.321, (double)value);
+}
+
+TEST_F(SQLiteDatabaseTests, PreparedStatement_FetchColumn_Boolean) {
+    // Arrange
+    auto statement = db.BuildStatement(
+        "SELECT completed FROM quests WHERE npc = 2"
+    ).statement;
+    (void)statement->Step();
+
+    // Act
+    const auto value = statement->FetchColumn(0, Value::Type::Boolean);
+
+    // Assert
+    EXPECT_EQ(Value::Type::Boolean, value.GetType());
+    EXPECT_TRUE((bool)value);
 }
 
 TEST_F(SQLiteDatabaseTests, CreateSnapshot) {

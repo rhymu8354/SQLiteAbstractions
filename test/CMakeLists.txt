@@ -1,7 +1,7 @@
-# CMakeLists.txt for SQLiteClusterMemberStoreTests
+# CMakeLists.txt for SQLiteAbstractionsTests
 
 cmake_minimum_required(VERSION 3.8)
-set(This SQLiteClusterMemberStoreTests)
+set(This SQLiteAbstractionsTests)
 
 set(Sources
     src/SQLiteDatabaseTests.cpp
@@ -17,7 +17,7 @@ target_include_directories(${This} PRIVATE ..)
 target_link_libraries(${This} PUBLIC
     gtest_main
     SQLite
-    SQLiteClusterMemberStore
+    SQLiteAbstractions
     SystemAbstractions
 )
 

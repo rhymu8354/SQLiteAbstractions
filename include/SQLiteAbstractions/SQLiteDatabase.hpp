@@ -11,7 +11,7 @@
  * cluster leader installs a new snapshot.
  */
 
-#include <ClusterMemberStore/Database.hpp>
+#include <DatabaseAbstractions/Database.hpp>
 #include <memory>
 #include <stddef.h>
 #include <stdint.h>
@@ -19,7 +19,7 @@
 #include <SystemAbstractions/IFileSystemEntry.hpp>
 #include <vector>
 
-namespace ClusterMemberStore {
+namespace DatabaseAbstractions {
 
     /**
      * This is the SQLite implementation of an abstract interface for

@@ -1,4 +1,4 @@
-# SQLiteClusterMemberStore
+# SQLiteAbstractions
 
 This library is intended for use in systems where data is stored for exlusive
 use by a member of a larger cluster (such as in the Raft Consensus Algorithm).
@@ -9,8 +9,8 @@ This is a specific implementation which stores data as an SQLite database.
 
 ## Usage
 
-The `ClusterMemberStore::SQLiteDatabase` class an implementation of the
-`ClusterMemberStore::Database` pure abstract interface class.  It adapts the
+The `DatabaseAbstractions::SQLiteDatabase` class an implementation of the
+`DatabaseAbstractions::Database` pure abstract interface class.  It adapts the
 interface to fit an SQLite database.  The `Open` method opens a database
 connection.  From then on, method calls to the object are translated into
 database queries, and the database engine handles persisting the actual data.
@@ -42,7 +42,7 @@ There are two distinct steps in the build process:
 * [CMake](https://cmake.org/) version 3.8 or newer
 * C++11 toolchain compatible with CMake for your development platform (e.g.
   [Visual Studio](https://www.visualstudio.com/) on Windows)
-* [ClusterMemberStore](https://github.com/rhymu8354/ClusterMemberStore.git) -
+* [DatabaseAbstractions](https://github.com/rhymu8354/DatabaseAbstractions.git) -
   the library which defines the abstract interface implemented by this project
 * [SQLite](https://github.com/rhymu8354/SQLite.git) - a public domain,
   embeddable database engine.
