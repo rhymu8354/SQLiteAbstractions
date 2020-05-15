@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <StringExtensions/StringExtensions.hpp>
+#include <SystemAbstractions/File.hpp>
 #include <unordered_set>
 
 namespace {
@@ -198,6 +199,7 @@ namespace DatabaseAbstractions {
     struct SQLiteDatabase::Impl {
         // Properties
 
+        std::string filePath;
         DatabaseConnection db;
 
         // Methods
@@ -214,6 +216,7 @@ namespace DatabaseAbstractions {
     }
 
     bool SQLiteDatabase::Open(const std::string& filePath) {
+        impl_->filePath = filePath;
         sqlite3* dbRaw;
         if (sqlite3_open(filePath.c_str(), &dbRaw) != SQLITE_OK) {
             (void)sqlite3_close(dbRaw);
@@ -274,10 +277,31 @@ namespace DatabaseAbstractions {
     }
 
     Blob SQLiteDatabase::CreateSnapshot() {
-        return {};
+        sqlite3_int64 size;
+        const auto serialization = sqlite3_serialize(impl_->db.get(), "main", &size, 0);
+        return Blob(
+            serialization,
+            serialization + size
+        );
     }
 
-    void SQLiteDatabase::InstallSnapshot(const Blob& blob) {
+    std::string SQLiteDatabase::InstallSnapshot(const Blob& blob) {
+        impl_->db = nullptr;
+        SystemAbstractions::File dbFile(impl_->filePath);
+        if (!dbFile.OpenReadWrite()) {
+            return "Unable to open the database file for writing";
+        }
+        if (dbFile.Write(blob) != blob.size()) {
+            return "Unable to write to database file";
+        }
+        if (!dbFile.SetSize(blob.size())) {
+            return "Unable to set the end of the database file";
+        }
+        dbFile.Close();
+        if (!Open(impl_->filePath)) {
+            return "Unable to open database after installing snapshot";
+        }
+        return "";
     }
 
 }

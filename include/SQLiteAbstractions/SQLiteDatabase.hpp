@@ -46,7 +46,7 @@ namespace DatabaseAbstractions {
         ) override;
         virtual std::string ExecuteStatement(const std::string& statement) override;
         virtual Blob CreateSnapshot() override;
-        virtual void InstallSnapshot(const Blob& blob) override;
+        virtual std::string InstallSnapshot(const Blob& blob) override;
 
         // Properties
     private:

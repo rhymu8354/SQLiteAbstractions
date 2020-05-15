@@ -147,9 +147,8 @@ struct SQLiteDatabaseTests
         reconstructedDb = std::move(db);
     }
 
-    void SerializeDatabase(
-        const DatabaseConnection& db,
-        std::string& serialization
+    std::string SerializeDatabase(
+        const DatabaseConnection& db
     ) {
         sqlite3_int64 serializationSize;
         const auto serializationRaw = sqlite3_serialize(
@@ -158,24 +157,27 @@ struct SQLiteDatabaseTests
             &serializationSize,
             0
         );
-        serialization.assign(
+        std::string serialization(
             serializationRaw,
             serializationRaw + serializationSize
         );
         sqlite3_free(serializationRaw);
+        return serialization;
+    }
+
+    std::string SerializeDatabase() {
+        DatabaseConnection db;
+        OpenDatabase(defaultDbFilePath, db);
+        return SerializeDatabase(db);
     }
 
     void VerifySerialization(const std::string& expected) {
-        std::string actual;
-        DatabaseConnection db;
-        OpenDatabase(defaultDbFilePath, db);
-        SerializeDatabase(db, actual);
+        const auto actual = SerializeDatabase();
         EXPECT_TRUE(expected == actual);
     }
 
     void VerifySerialization(const DatabaseConnection& otherDb) {
-        std::string expected;
-        SerializeDatabase(otherDb, expected);
+        const auto expected = SerializeDatabase(otherDb);
         VerifySerialization(expected);
     }
 
@@ -194,10 +196,7 @@ struct SQLiteDatabaseTests
             defaultDbInitStatements,
             dbInit
         );
-        SerializeDatabase(
-            dbInit,
-            startingSerialization
-        );
+        startingSerialization = SerializeDatabase(dbInit);
         (void)db.Open(defaultDbFilePath);
     }
 
@@ -567,11 +566,41 @@ TEST_F(SQLiteDatabaseTests, PreparedStatement_FetchColumn_Boolean) {
 }
 
 TEST_F(SQLiteDatabaseTests, CreateSnapshot) {
-    // TODO
-    ASSERT_TRUE(false);
+    // Arrange
+    const auto serialization = SerializeDatabase();
+    DatabaseAbstractions::Blob expectedSnapshot(
+        serialization.begin(),
+        serialization.end()
+    );
+
+    // Act
+    const auto actualSnapshot = db.CreateSnapshot();
+
+    // Assert
+    EXPECT_TRUE(expectedSnapshot == actualSnapshot);
 }
 
 TEST_F(SQLiteDatabaseTests, InstallSnapshot) {
-    // TODO
-    ASSERT_TRUE(false);
+    // Arrange
+    DatabaseConnection comparisonDb;
+    ReconstructDatabase(
+        comparisonDbFilePath,
+        defaultDbInitStatements,
+        comparisonDb,
+        {
+            "INSERT INTO quests (npc, quest) VALUES (1, 99)",
+            "INSERT INTO quests (npc, quest) VALUES (2, 76)",
+        }
+    );
+    const auto serialization = SerializeDatabase(comparisonDb);
+    DatabaseAbstractions::Blob snapshot(
+        serialization.begin(),
+        serialization.end()
+    );
+
+    // Act
+    db.InstallSnapshot(snapshot);
+
+    // Assert
+    VerifySerialization(comparisonDb);
 }
